@@ -107,9 +107,25 @@ export async function register(email: string, password: string) {
 
 export async function login(email: string, password: string) {
   const user = await findUserByEmail(email);
-  if (!user) throw new Error('Invalid credentials');
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) throw new Error('Invalid credentials');
+  if (!user) {
+    const err: any = new Error('Invalid credentials');
+    err.status = 401;
+    throw err;
+  }
+  // Guard against missing/invalid password hashes and ensure compare failures do not bubble as 500s
+  let ok = false;
+  try {
+    if (user.passwordHash) {
+      ok = await bcrypt.compare(password, user.passwordHash);
+    }
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    const err: any = new Error('Invalid credentials');
+    err.status = 401;
+    throw err;
+  }
   // Fetch role for payload
   let role: 'user' | 'admin' = 'user';
   try {
