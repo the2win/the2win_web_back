@@ -19,7 +19,30 @@ import path from 'path';
 dotenv.config();
 const app = express();
 app.use(cookieParser());
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
+// CORS configuration (allowlist via env CORS_ORIGINS, comma-separated)
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:5173')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+const corsOptions = {
+    origin: (origin, callback) => {
+        // Allow non-browser requests or same-origin requests without an Origin header
+        if (!origin)
+            return callback(null, true);
+        // Allow all if '*' present, else check explicit allowlist
+        if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+    exposedHeaders: ['Content-Length'],
+    maxAge: 600,
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 // Static files for uploaded receipts
 try {

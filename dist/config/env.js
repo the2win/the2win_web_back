@@ -5,6 +5,7 @@ export const ENV = {
     JWT_SECRET: process.env.JWT_SECRET || 'dev_jwt_secret_change_me',
     STRIPE_KEY: process.env.STRIPE_KEY || 'sk_test_replace',
     OTP_EXP_MIN: parseInt(process.env.OTP_EXP_MIN || '10', 10),
+    DATABASE_URL: process.env.DATABASE_URL || process.env.MYSQL_URL || process.env.DB_URL,
     DB_HOST: process.env.DB_HOST || 'localhost',
     DB_PORT: parseInt(process.env.DB_PORT || '3306', 10),
     DB_USER: process.env.DB_USER || 'root',
