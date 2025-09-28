@@ -7,6 +7,10 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 function getConnConfig() {
+  const DB_URL = process.env.DATABASE_URL || process.env.MYSQL_URL || process.env.DB_URL;
+  if (DB_URL) {
+    return DB_URL as any; // mysql2 accepts a connection URI string
+  }
   return {
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT || 3306),
@@ -40,13 +44,43 @@ export async function migrate() {
     if (fs.existsSync(alt)) dir = alt;
   }
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+  // Simple SQL splitter that respects quotes/backticks (no procedure support)
+  function splitSql(sql: string): string[] {
+    const stmts: string[] = [];
+    let cur = '';
+    let inSingle = false;
+    let inDouble = false;
+    let inBacktick = false;
+    for (let i = 0; i < sql.length; i++) {
+      const ch = sql[i];
+      const prev = sql[i - 1];
+      if (!inDouble && !inBacktick && ch === "'" && prev !== '\\') inSingle = !inSingle;
+      else if (!inSingle && !inBacktick && ch === '"' && prev !== '\\') inDouble = !inDouble;
+      else if (!inSingle && !inDouble && ch === '`') inBacktick = !inBacktick;
+      if (!inSingle && !inDouble && !inBacktick && ch === ';') {
+        if (cur.trim()) stmts.push(cur.trim());
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur.trim()) stmts.push(cur.trim());
+    // Remove line comments starting with -- and empty lines
+    return stmts
+      .map(s => s.replace(/\n\s*--.*$/gm, '').trim())
+      .filter(s => s.length > 0);
+  }
+
   for (const f of files) {
     if (done.has(f)) continue;
     const sql = fs.readFileSync(path.join(dir, f), 'utf8');
     process.stdout.write(`Applying migration: ${f} ... `);
     try {
       await conn.beginTransaction();
-      await conn.query(sql);
+      const statements = splitSql(sql);
+      for (const stmt of statements) {
+        await conn.query(stmt);
+      }
       await conn.query('INSERT INTO migrations (filename) VALUES (?)', [f]);
       await conn.commit();
       console.log('done');
