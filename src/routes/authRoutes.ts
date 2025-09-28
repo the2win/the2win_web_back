@@ -29,12 +29,15 @@ router.post('/login', async (req, res, next) => {
     const { email, password } = credSchema.parse(req.body);
     const { token, user } = await login(email, password);
     // set httpOnly cookie for session-style auth
+    const isProd = process.env.NODE_ENV === 'production';
+    const cookieDomain = process.env.COOKIE_DOMAIN || undefined; // e.g. your apex domain if needed
     res.cookie(COOKIE_NAME, token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: isProd, // required for SameSite=None on modern browsers
+      sameSite: isProd ? 'none' : 'lax', // cross-site with frontend on different domain
       maxAge: 24 * 60 * 60 * 1000,
       path: '/',
+      domain: cookieDomain,
     });
     res.json({ token, user });
   } catch (e: any) { next(e); }
@@ -59,7 +62,14 @@ router.get('/me', async (req, res) => {
 });
 
 router.post('/logout', (req, res) => {
-  res.clearCookie(COOKIE_NAME, { path: '/' });
+  const isProd = process.env.NODE_ENV === 'production';
+  const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+  res.clearCookie(COOKIE_NAME, {
+    path: '/',
+    domain: cookieDomain,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax'
+  });
   res.json({ ok: true });
 });
 

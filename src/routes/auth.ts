@@ -16,7 +16,15 @@ router.post('/register', async (req, res) => {
   const [result] = await pool.query('INSERT INTO users (email, password_hash, created_at, updated_at) VALUES (?,?, NOW(), NOW())', [email, hash]);
   const id = (result as any).insertId as number;
   const token = signJwt({ id: String(id), role: 'user' });
-  res.cookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'lax' });
+  const isProd = process.env.NODE_ENV === 'production';
+  const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: isProd ? 'none' : 'lax',
+    secure: isProd,
+    path: '/',
+    domain: cookieDomain,
+  });
   res.json({ id, email, role: 'user', balance: 0 });
 });
 
@@ -29,12 +37,22 @@ router.post('/login', async (req, res) => {
   const match = await bcrypt.compare(password, user.password_hash);
   if (!match) return res.status(401).json({ error: 'invalid_credentials' });
   const token = signJwt({ id: String(user.id), role: user.role });
-  res.cookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'lax' });
+  const isProd2 = process.env.NODE_ENV === 'production';
+  const cookieDomain2 = process.env.COOKIE_DOMAIN || undefined;
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: isProd2 ? 'none' : 'lax',
+    secure: isProd2,
+    path: '/',
+    domain: cookieDomain2,
+  });
   res.json({ id: user.id, email, role: user.role, balance: user.balance });
 });
 
 router.post('/logout', (_req, res) => {
-  res.clearCookie(COOKIE_NAME);
+  const isProd = process.env.NODE_ENV === 'production';
+  const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+  res.clearCookie(COOKIE_NAME, { path: '/', domain: cookieDomain, secure: isProd, sameSite: isProd ? 'none' : 'lax' });
   res.json({ ok: true });
 });
 

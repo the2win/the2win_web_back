@@ -20,29 +20,50 @@ import path from 'path';
 dotenv.config();
 
 const app = express();
+// Behind Cloud Run/Proxies ensure correct protocol info for cookies, redirects, etc.
+app.set('trust proxy', 1);
 app.use(cookieParser());
 
 // CORS configuration (allowlist via env CORS_ORIGINS, comma-separated)
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:5173')
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:5173,https://*.vercel.app')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+
+// Allow exact matches and simple wildcard patterns like https://*.vercel.app
+function isOriginAllowed(origin: string): boolean {
+  if (!origin) return true;
+  if (allowedOrigins.includes('*')) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  // Match wildcard patterns
+  for (const pat of allowedOrigins) {
+    if (!pat.includes('*')) continue;
+    // Escape regex special chars except '*', then replace '*' with '.*'
+    const regex = new RegExp('^' + pat
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*') + '$');
+    if (regex.test(origin)) return true;
+  }
+  return false;
+}
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
     // Allow non-browser requests or same-origin requests without an Origin header
     if (!origin) return callback(null, true);
     // Allow all if '*' present, else check explicit allowlist
-    if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  // allow cors package to reflect requested headers automatically
+  allowedHeaders: undefined,
   exposedHeaders: ['Content-Length'],
   maxAge: 600,
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
