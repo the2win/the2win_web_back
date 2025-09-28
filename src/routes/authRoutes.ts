@@ -7,6 +7,7 @@ import { db } from '../models/memoryDB.js';
 import { generateOtp } from '../utils/otp.js';
 import { sendEmail } from '../utils/email.js';
 import { ENV } from '../config/env.js';
+import { User } from '../models/index.js';
 
 const router = Router();
 
@@ -76,7 +77,18 @@ router.post('/logout', (req, res) => {
 router.post('/forgot-password', async (req, res, next) => {
   try {
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
-    const user = db.users.find(u => u.email === email);
+    let user: any = undefined;
+    try {
+      const u = await User.findOne({ where: { email } });
+      if (u) user = { id: String(u.id), email: u.email };
+    } catch {}
+    if (!user) {
+      try {
+        const [rows] = await pool.query<any[]>(`SELECT id,email FROM users WHERE email=? LIMIT 1`, [email]);
+        if (Array.isArray(rows) && rows.length) user = { id: String(rows[0].id), email: rows[0].email };
+      } catch {}
+    }
+    if (!user) user = db.users.find(u => u.email === email);
     if (!user) return res.json({ message: 'If account exists OTP sent' });
     const { code, expiresAt } = generateOtp();
     createOtp(user, code, expiresAt);
@@ -88,7 +100,12 @@ router.post('/forgot-password', async (req, res, next) => {
 router.post('/verify-otp', async (req, res, next) => {
   try {
     const { email, code } = z.object({ email: z.string().email(), code: z.string() }).parse(req.body);
-    const user = db.users.find(u => u.email === email);
+    let user: any = undefined;
+    try {
+      const [rows] = await pool.query<any[]>(`SELECT id,email,otp_code as otpCode, otp_expires_at as otpExpires FROM users WHERE email=? LIMIT 1`, [email]);
+      if (Array.isArray(rows) && rows.length) user = { id: String(rows[0].id), email: rows[0].email, otp: { code: rows[0].otpCode, expiresAt: Number(rows[0].otpExpires) } };
+    } catch {}
+    if (!user) user = db.users.find(u => u.email === email);
     if (!user) return res.status(400).json({ message: 'Invalid code' });
     const ok = verifyOtp(user, code);
     if (!ok) return res.status(400).json({ message: 'Invalid or expired code' });
@@ -104,7 +121,12 @@ router.post('/reset-password', async (req, res, next) => {
       newPassword: z.string().min(8)
         .regex(/^(?=.*[A-Za-z])(?=.*\d).+$/, 'Password must include letters and numbers')
     }).parse(req.body);
-    const user = db.users.find(u => u.email === email);
+    let user: any = undefined;
+    try {
+      const [rows] = await pool.query<any[]>(`SELECT id,email,otp_code as otpCode, otp_expires_at as otpExpires FROM users WHERE email=? LIMIT 1`, [email]);
+      if (Array.isArray(rows) && rows.length) user = { id: String(rows[0].id), email: rows[0].email, otp: { code: rows[0].otpCode, expiresAt: Number(rows[0].otpExpires) } };
+    } catch {}
+    if (!user) user = db.users.find(u => u.email === email);
     if (!user || !verifyOtp(user, code)) return res.status(400).json({ message: 'Invalid request' });
     await resetPassword(user, newPassword);
     res.json({ message: 'Password updated' });
