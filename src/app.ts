@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { corsMiddleware } from './config/cors.js';
 import helmet from 'helmet';
 import authRoutes from './routes/authRoutes';
 import walletRoutes from './routes/walletRoutes';
@@ -15,7 +16,7 @@ import { rateLimit } from './middleware/rateLimit';
 
 export const app = express();
 app.use(helmet());
-app.use(cors({ origin: '*' }));
+app.use(corsMiddleware);
 app.use(express.json());
 // Static files (receipts)
 const uploadsDir = path.resolve(process.cwd(), 'uploads');
