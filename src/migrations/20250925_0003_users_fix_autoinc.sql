@@ -1,0 +1,16 @@
+-- Ensure users.id is BIGINT and AUTO_INCREMENT only if current type is BIGINT (skip if VARCHAR-based schema)
+SET @is_bigint := (
+	SELECT IF(DATA_TYPE = 'bigint', 1, 0)
+	FROM INFORMATION_SCHEMA.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'id'
+);
+SET @has_auto := (
+	SELECT IF(EXTRA LIKE '%auto_increment%', 1, 0)
+	FROM INFORMATION_SCHEMA.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'id'
+);
+SET @sql := IF(@is_bigint = 1 AND @has_auto = 0,
+	'ALTER TABLE users MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT',
+	'SELECT 1'
+);
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
