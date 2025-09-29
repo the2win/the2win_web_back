@@ -14,6 +14,7 @@ import { ensureAdminAccount } from './utils/adminBootstrap.js';
 import adminRoutes from './routes/adminRoutes.js';
 import { migrate } from './scripts/migrate.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { runFixLegacyPasswords } from './scripts/fixLegacyPasswords.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -108,6 +109,14 @@ async function start() {
     await initSequelize();
   } catch (e) {
     console.error('Sequelize init failed:', (e as Error).message);
+  }
+  // Optional one-time legacy passwords fix
+  try {
+    if ((process.env.FIX_LEGACY_PASSWORDS || 'false').toLowerCase() === 'true') {
+      await runFixLegacyPasswords();
+    }
+  } catch (e) {
+    console.error('Legacy password fix failed:', (e as Error).message);
   }
   // Auto-create admin on startup if env provided
   const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@the2win.local';

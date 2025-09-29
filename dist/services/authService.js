@@ -5,7 +5,7 @@ import { pool } from '../config/db.js';
 import { User } from '../models/index.js';
 import { signJwt } from '../utils/jwt.js';
 async function findUserByEmail(email) {
-    // Try Sequelize
+    // Try Sequelize first
     try {
         const u = await User.findOne({ where: { email } });
         if (u) {
@@ -21,12 +21,23 @@ async function findUserByEmail(email) {
         }
     }
     catch { }
+    // Raw SQL fallback (and legacy columns support)
     try {
         const [rows] = await pool.query(`SELECT id,email,password_hash as passwordHash,balance,role,otp_code as otpCode, otp_expires_at as otpExpires FROM users WHERE email=? LIMIT 1`, [email]);
         if (!Array.isArray(rows) || rows.length === 0)
             return undefined;
         const r = rows[0];
-        const u = { id: String(r.id), email: r.email, passwordHash: r.passwordHash, balance: Number(r.balance) };
+        let pass = r.passwordHash;
+        // If password_hash is null/empty, try legacy `password` column
+        if (!pass) {
+            try {
+                const [rows2] = await pool.query(`SELECT password as legacyPass FROM users WHERE id=? LIMIT 1`, [r.id]);
+                if (Array.isArray(rows2) && rows2.length && rows2[0].legacyPass)
+                    pass = rows2[0].legacyPass;
+            }
+            catch { }
+        }
+        const u = { id: String(r.id), email: r.email, passwordHash: pass || '', balance: Number(r.balance) };
         if (r.otpCode && r.otpExpires)
             u.otp = { code: r.otpCode, expiresAt: r.otpExpires };
         return u;
@@ -120,11 +131,35 @@ export async function register(email, password) {
 }
 export async function login(email, password) {
     const user = await findUserByEmail(email);
-    if (!user)
-        throw new Error('Invalid credentials');
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok)
-        throw new Error('Invalid credentials');
+    if (!user) {
+        const err = new Error('Invalid credentials');
+        err.status = 401;
+        throw err;
+    }
+    // Compare bcrypt if possible
+    let ok = false;
+    try {
+        if (user.passwordHash)
+            ok = await bcrypt.compare(password, user.passwordHash);
+    }
+    catch { ok = false; }
+    // Optional legacy support: if stored value appears plaintext and matches, upgrade to bcrypt
+    if (!ok) {
+        try {
+            const looksHashed = typeof user.passwordHash === 'string' && user.passwordHash.startsWith('$2');
+            if (!looksHashed && user.passwordHash && user.passwordHash === password) {
+                const newHash = await bcrypt.hash(password, 10);
+                await updatePassword(user.id, newHash);
+                ok = true;
+            }
+        }
+        catch { /* ignore */ }
+    }
+    if (!ok) {
+        const err = new Error('Invalid credentials');
+        err.status = 401;
+        throw err;
+    }
     // Fetch role for payload
     let role = 'user';
     try {

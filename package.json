@@ -8,7 +8,8 @@
     "build": "tsc -p .",
     "start": "node dist/server.js",
     "migrate": "ts-node src/scripts/migrate.ts",
-    "seed:admin": "ts-node src/scripts/seedAdmin.ts"
+    "seed:admin": "ts-node src/scripts/seedAdmin.ts",
+    "fix:passwords": "ts-node src/scripts/fixLegacyPasswords.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
