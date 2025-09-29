@@ -20,6 +20,10 @@ export function errorHandler(err: any, _req: Request, res: Response, _next: Next
   if (typeof (err?.code) === 'string' && err.code === 'ER_DUP_ENTRY') status = 409;
 
   // Log detailed error on server only
-  console.error('[errorHandler]', { status, message, stack: err?.stack });
-  res.status(status).json({ message });
+  console.error('[errorHandler]', { status, message, stack: err?.stack, debug: err?.debug });
+  const payload: any = { message };
+  if ((process.env.AUTH_DEBUG || '').toLowerCase() === 'true' && err?.debug) {
+    payload.debug = err.debug;
+  }
+  res.status(status).json(payload);
 }

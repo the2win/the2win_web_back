@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { nanoid } from 'nanoid';
 import { db, User as MemoryUser } from '../models/memoryDB.js';
@@ -11,7 +12,7 @@ async function findUserByEmail(email: string): Promise<MemoryUser | undefined> {
   // Prefer direct MySQL first for consistent schema mapping across environments
   try {
     const [rows] = await pool.query<any[]>(
-      `SELECT id,email,password_hash AS passwordHash,balance,role,otp_code AS otpCode, otp_expires_at AS otpExpires FROM users WHERE email=? LIMIT 1`,
+      `SELECT id,email,password_hash AS passwordHash,balance,role FROM users WHERE email=? LIMIT 1`,
       [email]
     );
     if (Array.isArray(rows) && rows.length) {
@@ -25,12 +26,12 @@ async function findUserByEmail(email: string): Promise<MemoryUser | undefined> {
         } catch {}
       }
       const u: MemoryUser = {
-        id: String(r.id),
-        email: r.email,
-        passwordHash: pass || '',
-        balance: Number(r.balance),
+        id: String(r.id ?? ''),
+        email: String(r.email ?? ''),
+        passwordHash: String(pass || ''),
+        balance: Number(r.balance ?? 0),
       };
-      if (r.otpCode && r.otpExpires) u.otp = { code: r.otpCode, expiresAt: r.otpExpires };
+      // OTP columns might not exist on this DB; handled elsewhere when needed
       return u;
     }
   } catch {
@@ -130,12 +131,15 @@ export async function register(email: string, password: string) {
 export async function login(email: string, password: string) {
   const user = await findUserByEmail(email);
   if (!user) {
+    console.warn('[auth] login failed: user not found for email');
     const err: any = new Error('Invalid credentials');
     err.status = 401;
+    err.debug = { stage: 'user_not_found', email };
     throw err;
   }
   // Guard against missing/invalid password hashes and ensure compare failures do not bubble as 500s
   let ok = false;
+  let debugInfo: any = { stage: 'init' };
   try {
     if (user.passwordHash) {
       // Normalize common legacy bcrypt prefixes from PHP ($2y, $2x) and trim any whitespace
@@ -144,7 +148,14 @@ export async function login(email: string, password: string) {
       const normalized = trimmed.startsWith('$2y$') || trimmed.startsWith('$2x$')
         ? ('$2a$' + trimmed.slice(4))
         : trimmed;
+      const dbg = (process.env.AUTH_DEBUG || '').toLowerCase() === 'true';
+      if (dbg) {
+        console.log('[auth][dbg] user id/email:', user.id, email);
+        console.log('[auth][dbg] hash len:', normalized.length, 'prefix:', normalized.slice(0, 4));
+      }
       ok = await bcrypt.compare(password, normalized);
+      if (dbg) console.log('[auth][dbg] bcrypt.compare =>', ok);
+      debugInfo = { stage: 'bcrypt_compare', ok, hashLen: normalized.length, hashPrefix: normalized.slice(0,4) };
       // If comparison succeeded using a normalized legacy variant, upgrade to a fresh modern hash
       if (ok && normalized !== trimmed) {
         try {
@@ -157,6 +168,7 @@ export async function login(email: string, password: string) {
     }
   } catch {
     ok = false;
+    debugInfo = { stage: 'bcrypt_error' };
   }
   // Optional legacy support: if stored "hash" appears to be plaintext and matches, upgrade to bcrypt
   if (!ok) {
@@ -166,14 +178,47 @@ export async function login(email: string, password: string) {
         const newHash = await bcrypt.hash(password, 10);
         await updatePassword(user.id, newHash);
         ok = true;
+        if ((process.env.AUTH_DEBUG || '').toLowerCase() === 'true') console.log('[auth][dbg] plaintext password matched; upgraded to bcrypt');
+        debugInfo = { stage: 'plaintext_upgrade' };
       }
     } catch {
       // ignore and fall through to invalid creds
     }
   }
+  // Legacy hash formats support (md5/sha1/sha256), upgrade on successful match
   if (!ok) {
+    try {
+      const stored = String(user.passwordHash || '').trim().toLowerCase();
+      if (stored && !stored.startsWith('$2')) {
+        const md5 = crypto.createHash('md5').update(password, 'utf8').digest('hex');
+        const sha1 = crypto.createHash('sha1').update(password, 'utf8').digest('hex');
+        const sha256 = crypto.createHash('sha256').update(password, 'utf8').digest('hex');
+        const candidates = new Set<string>();
+        candidates.add(md5);
+        candidates.add(sha1);
+        candidates.add(sha256);
+        // Some systems store with prefixes like md5:xxxx or sha1$xxxx
+        const normalizedStored = stored.replace(/^(md5|sha1|sha256)[:$]/, '');
+        if (candidates.has(normalizedStored)) {
+          const upgraded = await bcrypt.hash(password, 10);
+          await updatePassword(user.id, upgraded);
+          ok = true;
+          if ((process.env.AUTH_DEBUG || '').toLowerCase() === 'true') console.log('[auth][dbg] legacy digest matched; upgraded to bcrypt');
+          debugInfo = { stage: 'legacy_digest_upgrade' };
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (!ok) {
+    console.warn('[auth] login failed: password mismatch for email');
+    if ((process.env.AUTH_DEBUG || '').toLowerCase() === 'true') {
+      console.warn('[auth][dbg] mismatch for', email);
+    }
     const err: any = new Error('Invalid credentials');
     err.status = 401;
+    err.debug = debugInfo;
     throw err;
   }
   // Fetch role for payload

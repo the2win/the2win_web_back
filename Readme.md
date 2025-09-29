@@ -30,7 +30,7 @@ copy backend/.env.example backend/.env
 cd backend
 npm install
 ```
-4. Run migrations
+4. Run migrations (SQL files in `src/migrations` are applied automatically)
 ```
 npm run migrate
 ```
@@ -53,7 +53,7 @@ npm run dev
 
 Health check: GET http://localhost:4000/health
 
-## Tables Overview
+## Tables Overview (managed via SQL migrations)
 - users: accounts with role & balance.
 - agents: cash deposit agents linked to a user.
 - bank_accounts: user withdrawal accounts.
@@ -66,8 +66,8 @@ Health check: GET http://localhost:4000/health
 - game_overrides: Admin scheduled next outcomes.
 
 ## Next Steps
-- Implement auth (register/login, jwt cookie) & /auth/me.
-- Add wallet endpoints (list transactions, create deposit/withdraw request).
-- Implement game engines & SSE streams.
-- Enforce overrides and fairness hashing logic.
-- File upload handler for receipts (link to receipts + transactions).
+- Implement auth (register/login, jwt cookie) & /auth/me. [DONE]
+- Add wallet endpoints (list transactions, create deposit/withdraw request). [DONE]
+- Implement game engines & SSE streams. [IN PROGRESS]
+- Enforce overrides and fairness hashing logic. [IN PROGRESS]
+- File upload handler for receipts (link to receipts + transactions). [DONE]
