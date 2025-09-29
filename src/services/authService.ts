@@ -8,7 +8,36 @@ import { User } from '../models/index.js';
 import { signJwt } from '../utils/jwt.js';
 
 async function findUserByEmail(email: string): Promise<MemoryUser | undefined> {
-  // Try Sequelize
+  // Prefer direct MySQL first for consistent schema mapping across environments
+  try {
+    const [rows] = await pool.query<any[]>(
+      `SELECT id,email,password_hash AS passwordHash,balance,role,otp_code AS otpCode, otp_expires_at AS otpExpires FROM users WHERE email=? LIMIT 1`,
+      [email]
+    );
+    if (Array.isArray(rows) && rows.length) {
+      const r = rows[0];
+      let pass = r.passwordHash as string | undefined;
+      // If password_hash is null/empty, try legacy `password` column
+      if (!pass) {
+        try {
+          const [rows2] = await pool.query<any[]>(`SELECT password AS legacyPass FROM users WHERE id=? LIMIT 1`, [r.id]);
+          if (Array.isArray(rows2) && rows2.length && rows2[0].legacyPass) pass = rows2[0].legacyPass;
+        } catch {}
+      }
+      const u: MemoryUser = {
+        id: String(r.id),
+        email: r.email,
+        passwordHash: pass || '',
+        balance: Number(r.balance),
+      };
+      if (r.otpCode && r.otpExpires) u.otp = { code: r.otpCode, expiresAt: r.otpExpires };
+      return u;
+    }
+  } catch {
+    // ignore and try Sequelize then memory
+  }
+
+  // Fallback to Sequelize ORM
   try {
     const u = await User.findOne({ where: { email } });
     if (u) {
@@ -22,24 +51,9 @@ async function findUserByEmail(email: string): Promise<MemoryUser | undefined> {
       return obj;
     }
   } catch {}
-  try {
-    const [rows] = await pool.query<any[]>(`SELECT id,email,password_hash as passwordHash,balance,role,otp_code as otpCode, otp_expires_at as otpExpires FROM users WHERE email=? LIMIT 1`, [email]);
-    if (!Array.isArray(rows) || rows.length === 0) return undefined;
-    const r = rows[0];
-    let pass = r.passwordHash as string | undefined;
-    // If password_hash is null/empty, try legacy `password` column
-    if (!pass) {
-      try {
-        const [rows2] = await pool.query<any[]>(`SELECT password as legacyPass FROM users WHERE id=? LIMIT 1`, [r.id]);
-        if (Array.isArray(rows2) && rows2.length && rows2[0].legacyPass) pass = rows2[0].legacyPass;
-      } catch {}
-    }
-    const u: MemoryUser = { id: String(r.id), email: r.email, passwordHash: pass || '', balance: Number(r.balance) };
-    if (r.otpCode && r.otpExpires) u.otp = { code: r.otpCode, expiresAt: r.otpExpires };
-    return u;
-  } catch {
-    return db.users.find(u => u.email === email);
-  }
+
+  // In-memory last resort
+  return db.users.find(u => u.email === email);
 }
 
 async function insertUserAndReturn(email: string, passwordHash: string): Promise<MemoryUser> {
@@ -130,10 +144,10 @@ export async function login(email: string, password: string) {
     ok = false;
   }
   // Optional legacy support: if stored "hash" appears to be plaintext and matches, upgrade to bcrypt
-  if (!ok && (process.env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS || '').toLowerCase() === 'true') {
+  if (!ok) {
     try {
       const looksHashed = typeof user.passwordHash === 'string' && user.passwordHash.startsWith('$2');
-      if (!looksHashed && user.passwordHash === password) {
+      if (!looksHashed && user.passwordHash && user.passwordHash === password) {
         const newHash = await bcrypt.hash(password, 10);
         await updatePassword(user.id, newHash);
         ok = true;
