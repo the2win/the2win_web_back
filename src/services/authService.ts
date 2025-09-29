@@ -138,7 +138,22 @@ export async function login(email: string, password: string) {
   let ok = false;
   try {
     if (user.passwordHash) {
-      ok = await bcrypt.compare(password, user.passwordHash);
+      // Normalize common legacy bcrypt prefixes from PHP ($2y, $2x) and trim any whitespace
+      const raw = String(user.passwordHash || '');
+      const trimmed = raw.trim();
+      const normalized = trimmed.startsWith('$2y$') || trimmed.startsWith('$2x$')
+        ? ('$2a$' + trimmed.slice(4))
+        : trimmed;
+      ok = await bcrypt.compare(password, normalized);
+      // If comparison succeeded using a normalized legacy variant, upgrade to a fresh modern hash
+      if (ok && normalized !== trimmed) {
+        try {
+          const upgraded = await bcrypt.hash(password, 10);
+          await updatePassword(user.id, upgraded);
+        } catch {
+          // non-fatal; continue
+        }
+      }
     }
   } catch {
     ok = false;
