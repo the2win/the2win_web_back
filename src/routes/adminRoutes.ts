@@ -14,6 +14,17 @@ router.use(requireAuth, requireAdmin);
 router.post('/overrides/crash', async (req: AuthedRequest, res, next) => {
   try {
     const { crashPoint } = z.object({ crashPoint: z.number().positive() }).parse(req.body);
+    // Check for existing unconsumed crash override
+    const existing = await AdminOverride.findOne({
+      where: {
+        game: 'crash',
+        consumedAtMs: null
+      },
+      order: [['createdAtMs', 'ASC']]
+    });
+    if (existing) {
+      return res.status(409).json({ message: 'A crash override is already queued and will be used in the next round.' });
+    }
     const rec = await AdminOverride.create({ id: nanoid(), game: 'crash', payload: { crashPoint }, createdBy: String(req.user!.id) });
     res.json(rec);
   } catch (e) { next(e); }
@@ -23,6 +34,32 @@ router.post('/overrides/wingo', async (req: AuthedRequest, res, next) => {
   try {
     const { color } = z.object({ color: z.enum(['GREEN','PURPLE','RED']) }).parse(req.body);
     const rec = await AdminOverride.create({ id: nanoid(), game: 'wingo', payload: { color }, createdBy: String(req.user!.id) });
+    res.json(rec);
+  } catch (e) { next(e); }
+});
+
+// Queue override for next Boxes round winners
+router.post('/overrides/boxes', async (req: AuthedRequest, res, next) => {
+  try {
+    // Accept either direct winners or simple indexes array
+    const schemaWinners = z.object({ winners: z.array(z.object({ idx: z.number().int().min(0).max(9), multiplier: z.union([z.literal(2), z.literal(3), z.literal(5)]) })).min(1).max(3) });
+    const schemaIndexes = z.object({ indexes: z.array(z.number().int().min(0).max(9)).min(1).max(3) });
+    let payload: any;
+    if ('winners' in req.body) {
+      const { winners } = schemaWinners.parse(req.body);
+      // ensure unique idx
+      const idxSet = new Set(winners.map(w=>w.idx));
+      if (idxSet.size !== winners.length) return res.status(400).json({ message: 'Duplicate winner indexes not allowed' });
+      payload = { winners };
+    } else {
+      const { indexes } = schemaIndexes.parse(req.body);
+      const uniq = Array.from(new Set(indexes));
+      // Map to default multipliers [5,3,2] in order provided
+      const mults = [5,3,2] as const;
+      const winners = uniq.map((idx, i) => ({ idx, multiplier: mults[Math.min(i, mults.length-1)] }));
+      payload = { winners };
+    }
+    const rec = await AdminOverride.create({ id: nanoid(), game: 'boxes', payload, createdBy: String(req.user!.id) });
     res.json(rec);
   } catch (e) { next(e); }
 });
@@ -221,11 +258,9 @@ router.post('/deposit-requests/:id/approve', async (req: AuthedRequest, res, nex
     rec.reviewedAtMs = Date.now() as any;
     rec.reviewedBy = String(req.user!.id);
     await rec.save();
-  // Credit user balance via transaction
+  // Credit user balance via transaction in LKR
   const amt = Number(rec.amount);
-  // If USDT (binance), convert to coins at 1 USDT = 100 coins
-  const credit = rec.method === 'binance' ? (amt * 100) : amt;
-  await (await import('../services/walletService.js')).addTransaction(rec.userId, 'DEPOSIT', credit, { method: rec.method, depositRequestId: rec.id, rate: rec.method === 'binance' ? '1USDT=100coins' : undefined });
+  await (await import('../services/walletService.js')).addTransaction(rec.userId, 'DEPOSIT', amt, { method: rec.method, depositRequestId: rec.id });
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -260,8 +295,8 @@ router.post('/withdraw-requests/:id/approve', async (req: AuthedRequest, res, ne
     rec.reviewedAtMs = Date.now() as any;
     rec.reviewedBy = String(req.user!.id);
     await rec.save();
-    // Debit user balance via transaction
-    await (await import('../services/walletService.js')).addTransaction(rec.userId, 'WITHDRAW', Number(rec.amount), { method: rec.method, withdrawRequestId: rec.id });
+    // Do NOT debit here; balance was already deducted when the user created the request
+    // This avoids double-charging the user on approval.
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -271,6 +306,19 @@ router.post('/withdraw-requests/:id/reject', async (req: AuthedRequest, res, nex
     const rec = await WithdrawRequest.findByPk(req.params.id);
     if (!rec) return res.status(404).json({ message: 'Not found' });
     if (rec.status !== 'PENDING') return res.status(400).json({ message: 'Already reviewed' });
+    // Refund the user's balance for the withdrawn amount, since the request is being rejected
+    try {
+      await (await import('../services/walletService.js')).addTransaction(
+        rec.userId,
+        'DEPOSIT',
+        Number(rec.amount),
+        { method: rec.method, withdrawRequestId: rec.id, refund: true }
+      );
+    } catch (refundErr: any) {
+      // If refund fails, do not mark as rejected; surface error to allow retry
+      return res.status(500).json({ message: 'Refund failed', error: String(refundErr?.message || refundErr) });
+    }
+    // After successful refund, mark as rejected
     rec.status = 'REJECTED';
     rec.reviewedAtMs = Date.now() as any;
     rec.reviewedBy = String(req.user!.id);

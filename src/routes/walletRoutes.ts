@@ -93,8 +93,8 @@ router.post('/deposit', requireAuth, async (req: AuthedRequest, res, next) => {
       receiptBase64: z.string().optional()
     }).parse(req.body);
 
-    // Enforce deposit limits: USDT or Cash Agent 10 - 100000
-    if (amount < 10 || amount > 100000) return res.status(400).json({ message: 'Amount must be between 10 and 100000' });
+    // Enforce deposit limits in LKR
+    if (amount < 1000 || amount > 500000) return res.status(400).json({ message: 'Amount must be between Rs. 1000 and Rs. 500000' });
 
     // Optional: Store uploaded receipt image
     let receiptPath: string | null = null;
@@ -130,12 +130,16 @@ router.post('/withdraw', requireAuth, async (req: AuthedRequest, res, next) => {
       bankAccountId: z.string().optional(),
       dest: z.string().max(255).optional()
     }).parse(req.body);
+    // Global withdraw limits in LKR
+    if (amount < 1000 || amount > 200000) return res.status(400).json({ message: 'Withdraw amount must be between Rs. 1000 and Rs. 200000' });
 
-    // Method-specific limits
-    if (method === 'binance') {
-      if (amount < 10 || amount > 5000) return res.status(400).json({ message: 'USDT withdraw amount must be between 10 and 5000' });
-    } else if (method === 'bank_in' || method === 'cash_agent') {
-      if (amount < 10 || amount > 100000) return res.status(400).json({ message: 'Amount must be between 10 and 100000' });
+    // Per-day cap: total approved+pending withdrawals today + this request must not exceed 200000
+    const startOfDay = new Date(); startOfDay.setHours(0,0,0,0);
+    const since = startOfDay.getTime();
+    const todays = await WithdrawRequest.findAll({ where: { userId: String(req.user!.id), createdAtMs: { [Op.gte]: since } } as any });
+    const todaysTotal = todays.reduce((sum, r:any) => sum + Number(r.amount || 0), 0);
+    if ((todaysTotal + amount) > 200000) {
+      return res.status(400).json({ message: 'Daily withdraw limit Rs. 200000 exceeded' });
     }
 
     // Validate bank account for bank_in
@@ -149,12 +153,12 @@ router.post('/withdraw', requireAuth, async (req: AuthedRequest, res, next) => {
       req.body.dest = `bank:${acct.id}:${acct.bankName}:${last4}`;
     }
 
-    // For binance, require destination address string
+    // For binance, require destination address string (if enabled)
     if (method === 'binance') {
-      if (!dest || dest.length < 10) return res.status(400).json({ message: 'Destination address required for USDT (Binance)' });
+      if (!dest || dest.length < 6) return res.status(400).json({ message: 'Destination address required' });
     }
 
-    // Create withdraw request pending admin approval; funds can be held or debited on approval
+    // Create withdraw request pending admin approval; as requested, reduce balance immediately and include 1500 coin increase (fee)
     let finalDest: string | null = null;
     if (method === 'bank_in') {
       finalDest = req.body.dest as string; // constructed above
@@ -164,8 +168,44 @@ router.post('/withdraw', requireAuth, async (req: AuthedRequest, res, next) => {
       // Optional note provided by user; otherwise mark as cash_agent
       finalDest = dest ? `cash_agent:${dest}` : 'cash_agent';
     }
-    const rec = await WithdrawRequest.create({ id: nanoid(), userId: String(req.user!.id), amount: amount as any, method: method as any, dest: finalDest });
-    res.json({ request: rec });
+    const totalDebit = amount; // no extra fee; amounts are in LKR
+    // Immediately reduce user's balance by totalDebit; record meta so we can reconcile later
+    try {
+      const requestId = nanoid();
+      const tx = await addTransaction(String(req.user!.id), 'WITHDRAW', totalDebit, { method, withdrawRequestId: requestId });
+      const rec = await WithdrawRequest.create({ id: requestId, userId: String(req.user!.id), amount: amount as any, method: method as any, dest: finalDest });
+      return res.json({ request: rec, balance: tx.balance });
+    } catch (e:any) {
+      return res.status(400).json({ message: e.message || 'Insufficient balance' });
+    }
+  } catch (e) { next(e); }
+});
+
+// User wallet summary (totals per type) for quick display in games section
+router.get('/summary', requireAuth, async (req: AuthedRequest, res, next) => {
+  try {
+    // Prefer raw SQL for performance
+    try {
+      const [rows]: any = await (await import('../config/db.js')).pool.query(
+        `SELECT UPPER(type) AS type, SUM(amount) AS total
+         FROM transactions
+         WHERE user_id = ?
+         GROUP BY UPPER(type)`, [String(req.user!.id)]
+      );
+      const map: Record<string, number> = {};
+      for (const r of rows as any[]) map[String(r.type)] = Number(r.total) || 0;
+      return res.json({
+        DEPOSIT: map.DEPOSIT || 0,
+        WITHDRAW: map.WITHDRAW || 0,
+        BET: map.BET || 0,
+        WIN: map.WIN || 0,
+      });
+    } catch {}
+    // Fallback ORM
+    const txs = await (await import('../models/index.js')).Transaction.findAll({ where: { userId: String(req.user!.id) } });
+    const out = { DEPOSIT: 0, WITHDRAW: 0, BET: 0, WIN: 0 } as Record<string, number>;
+    for (const t of txs as any[]) out[String((t.type || '').toUpperCase())] = (out[String((t.type || '').toUpperCase())] || 0) + Number(t.amount || 0);
+    res.json(out);
   } catch (e) { next(e); }
 });
 
